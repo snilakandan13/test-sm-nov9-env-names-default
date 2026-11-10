@@ -1,0 +1,43 @@
+name: Diagnose Test Deployment Authentication
+
+on:
+  push:
+    branches: [codex/diagnose-deployment-auth]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: zyoc_sandbox_test-sm-no-e5fc0c19
+    env:
+      AM_HOST: ${{ vars.SFCC_ACCOUNT_MANAGER_HOST }}
+      CLIENT_ID: ${{ vars.SFCC_CLIENT_ID }}
+      CLIENT_SECRET: ${{ secrets.SFCC_CLIENT_SECRET }}
+    steps:
+      - name: Check existing credentials without deployment
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          const { AM_HOST: host, CLIENT_ID: clientId, CLIENT_SECRET: secret } = process.env;
+          if (!host || !clientId || !secret) throw new Error('Required authentication configuration is absent.');
+          const url = new URL(`https://${host}/dwsso/oauth2/access_token`);
+          console.log(`Testing configured Account Manager host: ${url.hostname}`);
+          for (const method of ['client_secret_basic', 'client_secret_post']) {
+            const body = new URLSearchParams({ grant_type: 'client_credentials' });
+            const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+            if (method === 'client_secret_basic') {
+              headers.Authorization = `Basic ${Buffer.from(`${clientId}:${secret}`).toString('base64')}`;
+            } else {
+              body.set('client_id', clientId);
+              body.set('client_secret', secret);
+            }
+            const response = await fetch(url, { method: 'POST', headers, body, redirect: 'error', signal: AbortSignal.timeout(30000) });
+            const data = await response.json();
+            const knownErrors = ['invalid_client', 'invalid_grant', 'invalid_scope', 'unauthorized_client', 'unsupported_grant_type'];
+            const result = response.ok && typeof data.access_token === 'string' ? 'token issued' : knownErrors.includes(data.error) ? data.error : 'authentication rejected';
+            console.log(`${method}: HTTP ${response.status}; ${result}`);
+          }
+          NODE
